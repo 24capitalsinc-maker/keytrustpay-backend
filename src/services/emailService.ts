@@ -15,6 +15,12 @@ const transporter = nodemailer.createTransport({
     }
 });
 
+const isSmtpConfigured = (): boolean => {
+    if (!ENV.SMTP_HOST || !ENV.SMTP_USER || !ENV.SMTP_PASS) return false;
+    const pass = (ENV.SMTP_PASS || '').toLowerCase().trim();
+    return !(pass === '' || pass === 'your_mailbox_password_here' || pass.includes('placeholder'));
+};
+
 const getBaseTemplate = (title: string, content: string, category: string = "KeyTrust Pay Notification") => `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #e2e8f0; padding: 40px 20px;">
         <div style="max-width: 580px; margin: 0 auto; background-color: #111827; border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
@@ -44,6 +50,10 @@ const getBaseTemplate = (title: string, content: string, category: string = "Key
 `;
 
 export const sendWelcomeEmail = async (email: string, name: string) => {
+    if (!isSmtpConfigured()) {
+        console.warn(`[EmailService] SMTP not fully configured. Skipped welcome email to ${email}`);
+        return;
+    }
     try {
         const title = 'Welcome to KeyTrust Pay';
         const html = getBaseTemplate(
@@ -74,6 +84,10 @@ export const sendWelcomeEmail = async (email: string, name: string) => {
 };
 
 export const sendVerificationEmail = async (email: string, name: string, code: string) => {
+    if (!isSmtpConfigured()) {
+        console.warn(`[EmailService] SMTP not fully configured. Skipped verification email to ${email}`);
+        return;
+    }
     try {
         const title = 'Verify Your Email Address';
         const html = getBaseTemplate(
@@ -112,6 +126,10 @@ export const sendTransactionNotification = async (
     status: string = 'SETTLED',
     protocol: string = 'Domestic'
 ) => {
+    if (!isSmtpConfigured()) {
+        console.warn(`[EmailService] SMTP not fully configured. Skipped transaction notification to ${email}`);
+        return;
+    }
     try {
         const subject = type === 'debit' ? `Transfer Initiated: $${amount.toLocaleString()}` : `Money Received: $${amount.toLocaleString()}`;
         const description = type === 'debit'
@@ -157,6 +175,10 @@ export const sendTransactionNotification = async (
 };
 
 export const sendTransferStatusUpdate = async (email: string, amount: number, status: string, referenceId: string, reason?: string) => {
+    if (!isSmtpConfigured()) {
+        console.warn(`[EmailService] SMTP not fully configured. Skipped transfer update to ${email}`);
+        return;
+    }
     try {
         const isFailed = status === 'failed' || status === 'revoked';
         const title = isFailed ? 'Transfer Update: Review Required' : 'Transfer Approved & Settled';
@@ -190,6 +212,10 @@ export const sendTransferStatusUpdate = async (email: string, amount: number, st
 };
 
 export const sendPasswordResetEmail = async (email: string, token: string) => {
+    if (!isSmtpConfigured()) {
+        console.warn(`[EmailService] SMTP not fully configured. Skipped password reset email to ${email}`);
+        return;
+    }
     try {
         const resetURL = `${ENV.FRONTEND_URL || 'http://localhost:3000'}/reset-password/${token}`;
         const title = 'Reset Your Password';
@@ -220,6 +246,10 @@ export const sendPasswordResetEmail = async (email: string, token: string) => {
 };
 
 export const sendAdminAlert = async (subject: string, content: string) => {
+    if (!isSmtpConfigured()) {
+        console.warn(`[EmailService] SMTP not fully configured. Skipped admin alert: ${subject}`);
+        return;
+    }
     try {
         const html = getBaseTemplate(
             'Operations Alert',
@@ -243,6 +273,10 @@ export const sendAdminAlert = async (subject: string, content: string) => {
 };
 
 export const sendSecurityAlert = async (email: string, action: string) => {
+    if (!isSmtpConfigured()) {
+        console.warn(`[EmailService] SMTP not fully configured. Skipped security alert to ${email}`);
+        return;
+    }
     try {
         const html = getBaseTemplate(
             'Security Notification',

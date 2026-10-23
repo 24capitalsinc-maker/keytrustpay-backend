@@ -15,6 +15,9 @@ import { errorHandler } from './middleware/errorMiddleware';
 
 const app = express();
 
+// Trust reverse proxy (Vercel, Cloudflare, etc.) so req.ip and express-rate-limit read forwarded headers correctly
+app.set('trust proxy', 1);
+
 const uploadDir = path.join(__dirname, '../uploads');
 // Guard filesystem operations for Vercel/Serverless (read-only)
 if (process.env.NODE_ENV !== 'production' && !fs.existsSync(uploadDir)) {
@@ -41,6 +44,7 @@ const globalLimiter = rateLimit({
     max: 1000, // Limit each IP to 1000 requests per window
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false, default: true },
     message: 'Too many requests from this IP, please try again after 15 minutes.'
 });
 
