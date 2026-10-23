@@ -44,7 +44,7 @@ export const updateProfile = async (req: any, res: Response) => {
 
         // Send security alert for sensitive changes
         if (twoFactorEnabled !== undefined || notifications || limits) {
-            sendSecurityAlert(updatedUser.email, 'Security preferences or limits updated');
+            await sendSecurityAlert(updatedUser.email, 'Security preferences or limits updated');
         }
 
         res.json(updatedUser);
@@ -67,7 +67,7 @@ export const requestAccountClosure = async (req: any, res: Response) => {
         await user.save();
 
         // Notify user via security alert
-        sendSecurityAlert(user.email, 'Account Closure Requested. Your request is currently under administrative review.');
+        await sendSecurityAlert(user.email, 'Account Closure Requested. Your request is currently under administrative review.');
 
         res.json({ message: 'Account closure request submitted successfully' });
     } catch (error) {

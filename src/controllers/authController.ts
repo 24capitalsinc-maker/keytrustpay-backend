@@ -5,7 +5,14 @@ import crypto from 'crypto';
 import User from '../models/User';
 import { ENV } from '../config/env';
 import { generateAccountNumber } from '../utils/generateAccountNumber';
-import { sendVerificationEmail, sendWelcomeEmail, sendAdminAlert, sendPasswordResetEmail } from '../services/emailService';
+import {
+    sendVerificationEmail,
+    sendWelcomeEmail,
+    sendAdminAlert,
+    sendPasswordResetEmail,
+    sendLoginAlertEmail,
+    sendSecurityAlert,
+} from '../services/emailService';
 import SystemSettings from '../models/SystemSettings';
 
 const generateTokens = (id: string) => {
@@ -65,12 +72,12 @@ export const register = async (req: Request, res: Response) => {
             verificationCodeExpires,
         });
 
-        // Send the verification code email
-        await sendVerificationEmail(user.email, user.name, verificationCode);
+        // Send the verification code email (registration mode)
+        await sendVerificationEmail(user.email, user.name, verificationCode, 'registration');
         await sendAdminAlert(
             'New Account Registered',
             `<p style="margin-top: 0;">A new user account has been registered and is awaiting verification.</p>
-             <div style="margin: 20px 0; padding: 20px; border: 1px solid #eeeeee; background: #fafafa;">
+             <div style="margin: 20px 0; padding: 20px; border: 1px solid rgba(255,255,255,0.08); background: #161e2e; border-radius: 8px;">
                 <p style="margin: 0; font-size: 13px;"><strong>Identity:</strong> ${user.name}</p>
                 <p style="margin: 5px 0 0 0; font-size: 13px;"><strong>Email:</strong> ${user.email}</p>
                 <p style="margin: 5px 0 0 0; font-size: 13px;"><strong>Account:</strong> ${user.accountNumber}</p>
@@ -84,7 +91,6 @@ export const register = async (req: Request, res: Response) => {
             message: 'Registration successful. Please check your email for the verification code.',
         });
     } catch (error: any) {
-        // Handled via centralized error middleware
         res.status(500).json({ message: 'Server error: ' + error.message });
     }
 };
@@ -96,24 +102,24 @@ export const verifyEmail = async (req: Request, res: Response) => {
         if (!user) {
             return res.status(404).json({ message: 'User not found.' });
         }
-        if (user.isEmailVerified) {
-            return res.status(400).json({ message: 'This account is already verified.' });
-        }
+
         if (!user.verificationCode || !user.verificationCodeExpires) {
-            return res.status(400).json({ message: 'No verification code found. Please re-register.' });
+            return res.status(400).json({ message: 'No verification code found. Please sign in or request a new code.' });
         }
         if (new Date() > user.verificationCodeExpires) {
-            return res.status(400).json({ message: 'Verification code has expired. Please contact support.' });
+            return res.status(400).json({ message: 'Verification code has expired. Please request a new code.' });
         }
         if (user.verificationCode !== code.trim()) {
-            return res.status(400).json({ message: 'Invalid verification code. Please try again.' });
+            return res.status(400).json({ message: 'Invalid verification code. Please check and try again.' });
         }
 
-        // Mark as verified and clear the code using an atomic update
+        const wasUnverified = !user.isEmailVerified;
+
+        // Mark as verified, clear verification code, and stamp lastLoginAt
         const updatedUser = await User.findByIdAndUpdate(
             userId,
             {
-                $set: { isEmailVerified: true },
+                $set: { isEmailVerified: true, lastLoginAt: new Date() },
                 $unset: { verificationCode: 1, verificationCodeExpires: 1 }
             },
             { new: true }
@@ -140,10 +146,25 @@ export const verifyEmail = async (req: Request, res: Response) => {
             refreshToken,
         });
 
-        // Send welcome email after verification
-        sendWelcomeEmail(updatedUser.email, updatedUser.name);
+        // If this was initial registration verification, send Welcome email
+        if (wasUnverified) {
+            await sendWelcomeEmail(updatedUser.email, updatedUser.name, updatedUser.accountNumber);
+        } else {
+            // Otherwise it was a 6-hour login security verification; dispatch login alert email
+            await sendLoginAlertEmail(updatedUser.email, updatedUser.name, {
+                ip: req.ip || (req.headers['x-forwarded-for'] as string),
+                userAgent: req.headers['user-agent'],
+                time: new Date(),
+            });
+        }
+
+        await sendAdminAlert(
+            'Account Session Authorized',
+            `<p>User <strong>${updatedUser.name}</strong> (${updatedUser.email}) successfully authorized their session via 2FA PIN.</p>
+             <p><strong>Account:</strong> ${updatedUser.accountNumber}</p>
+             <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>`
+        );
     } catch (error: any) {
-        // Handled via centralized error middleware
         res.status(500).json({ message: 'Server error: ' + error.message });
     }
 };
@@ -170,11 +191,49 @@ export const login = async (req: Request, res: Response) => {
                 });
             }
 
+            // 6-HOUR LOGIN SECURITY CHECK
+            // If user has never logged in before, or if it has been >= 6 hours since their last login,
+            // require email verification code before issuing session tokens.
+            const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+            const lastLoginTime = user.lastLoginAt ? new Date(user.lastLoginAt).getTime() : 0;
+            const timeSinceLastLogin = Date.now() - lastLoginTime;
+            const requiresLoginVerification = !user.lastLoginAt || timeSinceLastLogin >= SIX_HOURS_MS;
+
+            if (requiresLoginVerification) {
+                // Generate a fresh 6-digit PIN
+                const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+                const verificationCodeExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+
+                await User.findByIdAndUpdate(user._id, {
+                    verificationCode,
+                    verificationCodeExpires,
+                });
+
+                // Dispatch login 2FA verification email
+                await sendVerificationEmail(user.email, user.name, verificationCode, 'login');
+                await sendAdminAlert(
+                    'Login 2FA Verification Initiated',
+                    `<p>User <strong>${user.name}</strong> (${user.email}) initiated login after 6+ hours since previous session.</p>
+                     <p>A one-time verification code has been dispatched to their email.</p>`
+                );
+
+                return res.status(200).json({
+                    requiresVerification: true,
+                    isLoginVerification: true,
+                    userId: user._id,
+                    message: 'Security Verification: A 6-digit authorization code has been dispatched to your email address.',
+                });
+            }
+
+            // Standard direct login for sessions within 6 hours
             const { accessToken, refreshToken } = generateTokens((user._id as any).toString());
 
-            // Save refresh token to DB (hashed)
+            // Save refresh token to DB (hashed) & update lastLoginAt
             const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
-            await User.findByIdAndUpdate(user._id, { refreshToken: hashedRefreshToken });
+            await User.findByIdAndUpdate(user._id, {
+                refreshToken: hashedRefreshToken,
+                lastLoginAt: new Date(),
+            });
 
             res.json({
                 _id: user._id,
@@ -186,11 +245,18 @@ export const login = async (req: Request, res: Response) => {
                 refreshToken,
             });
 
+            // Dispatch login alert notification to user
+            await sendLoginAlertEmail(user.email, user.name, {
+                ip: req.ip || (req.headers['x-forwarded-for'] as string),
+                userAgent: req.headers['user-agent'],
+                time: new Date(),
+            });
+
             // Notify admin of successful login
-            sendAdminAlert(
+            await sendAdminAlert(
                 'Account Login',
-                `<p style="margin-top: 0;">A verified user has logged in to the platform.</p>
-                 <div style="margin: 20px 0; padding: 20px; border: 1px solid #eeeeee; background: #fafafa;">
+                `<p style="margin-top: 0;">A verified user has logged in to KeyTrust Pay.</p>
+                 <div style="margin: 20px 0; padding: 20px; border: 1px solid rgba(255,255,255,0.08); background: #161e2e; border-radius: 8px;">
                     <p style="margin: 0; font-size: 13px;"><strong>Identity:</strong> ${user.name}</p>
                     <p style="margin: 5px 0 0 0; font-size: 13px;"><strong>Email:</strong> ${user.email}</p>
                     <p style="margin: 5px 0 0 0; font-size: 13px;"><strong>Timestamp:</strong> ${new Date().toISOString()}</p>
@@ -200,7 +266,6 @@ export const login = async (req: Request, res: Response) => {
             res.status(401).json({ message: 'Invalid email or password' });
         }
     } catch (error: any) {
-        // Handled via centralized error middleware
         res.status(500).json({ message: 'Server error: ' + error.message });
     }
 };
@@ -267,7 +332,6 @@ export const forgotPassword = async (req: Request, res: Response) => {
 
         res.json({ message: 'If an account exists, a reset link has been sent.' });
     } catch (error: any) {
-        // Handled via centralized error middleware
         res.status(500).json({ message: 'Server error' });
     }
 };
@@ -294,21 +358,20 @@ export const resetPassword = async (req: Request, res: Response) => {
 
         await user.save();
 
+        await sendSecurityAlert(user.email, 'Your KeyTrust Pay password was successfully updated.');
+
         res.json({ message: 'Success! Your institutional credentials have been updated.' });
     } catch (error: any) {
-        // Handled via centralized error middleware
         res.status(500).json({ message: 'Server error' });
     }
 };
+
 export const resendVerificationCode = async (req: Request, res: Response) => {
     const { userId } = req.body;
     try {
         const user = await User.findById(userId);
         if (!user) {
             return res.status(404).json({ message: 'User not found.' });
-        }
-        if (user.isEmailVerified) {
-            return res.status(400).json({ message: 'This account is already verified.' });
         }
 
         // Generate a new 6-digit verification code
@@ -324,11 +387,15 @@ export const resendVerificationCode = async (req: Request, res: Response) => {
         });
 
         // Send the new verification code email
-        await sendVerificationEmail(user.email, user.name, verificationCode);
+        await sendVerificationEmail(
+            user.email,
+            user.name,
+            verificationCode,
+            user.isEmailVerified ? 'login' : 'registration'
+        );
 
-        res.json({ message: 'A new verification code has been sent to your email.' });
+        res.json({ message: 'A new verification code has been dispatched to your email.' });
     } catch (error: any) {
-        // Handled via centralized error middleware
         res.status(500).json({ message: 'Server error: ' + error.message });
     }
 };

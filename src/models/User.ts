@@ -40,6 +40,7 @@ export interface IUser extends Document {
     profileImage?: string;
     isClosureRequested: boolean;
     closureReason: string;
+    lastLoginAt?: Date;
     createdAt: Date;
 }
 
@@ -83,6 +84,7 @@ const UserSchema: Schema = new Schema({
     profileImage: { type: String, default: '' },
     isClosureRequested: { type: Boolean, default: false },
     closureReason: { type: String, default: '' },
+    lastLoginAt: { type: Date },
     createdAt: { type: Date, default: Date.now },
 });
 

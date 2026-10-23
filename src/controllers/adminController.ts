@@ -2,7 +2,13 @@ import { Request, Response } from 'express';
 import User from '../models/User';
 import Transaction from '../models/Transaction';
 import SystemSettings from '../models/SystemSettings';
-import { sendAdminAlert, sendTransferStatusUpdate } from '../services/emailService';
+import {
+    sendAdminAlert,
+    sendTransferStatusUpdate,
+    sendTransactionNotification,
+    sendBalanceAdjustmentNotification,
+    sendSecurityAlert,
+} from '../services/emailService';
 
 export const getAllUsers = async (req: Request, res: Response) => {
     try {
@@ -30,11 +36,35 @@ export const updateAccountStatus = async (req: Request, res: Response) => {
 
         user.isFrozen = isFrozen;
         if (isFrozen) {
-            user.freezeReason = reason || 'Institutional audit required';
+            user.freezeReason = reason || 'Institutional compliance review';
         } else {
             user.freezeReason = '';
         }
         await user.save();
+
+        // Notify user via security alert
+        if (isFrozen) {
+            await sendSecurityAlert(
+                user.email,
+                'Account Temporarily Restricted',
+                `Your account has been placed on administrative hold. Reason: ${user.freezeReason}. Outbound transfers are paused. Please reach out to customer support.`
+            );
+        } else {
+            await sendSecurityAlert(
+                user.email,
+                'Account Restrictions Lifted',
+                'Your KeyTrust Pay account has been restored. All transactional privileges are now active.'
+            );
+        }
+
+        // Notify admin
+        await sendAdminAlert(
+            `Account Status Changed: ${user.name} (${isFrozen ? 'Frozen' : 'Active'})`,
+            `<p>User <strong>${user.name}</strong> (${user.email}) status has been updated to <strong>${isFrozen ? 'FROZEN' : 'ACTIVE'}</strong>.</p>
+             ${isFrozen ? `<p><strong>Reason:</strong> ${user.freezeReason}</p>` : ''}
+             <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>`
+        );
+
         res.json({ message: `User account ${isFrozen ? 'frozen' : 'unfrozen'} successfully` });
     } catch (error) {
         res.status(500).json({ message: 'Server error' });
@@ -51,6 +81,13 @@ export const updateUserLimits = async (req: Request, res: Response) => {
         if (monthlyTransfer !== undefined) user.limits.monthlyTransfer = monthlyTransfer;
 
         await user.save();
+
+        await sendSecurityAlert(
+            user.email,
+            'Transfer Limits Updated',
+            `Your daily transfer limit is now $${user.limits.dailyTransfer.toLocaleString()} and monthly limit is $${user.limits.monthlyTransfer.toLocaleString()}.`
+        );
+
         res.json({ message: 'User limits updated successfully', limits: user.limits });
     } catch (error) {
         res.status(500).json({ message: 'Server error' });
@@ -67,19 +104,29 @@ export const updateUserBalance = async (req: Request, res: Response) => {
         user.accountBalance = accountBalance;
         await user.save();
 
-        res.json({
-            message: 'Institutional liquidity adjusted successfully',
-            accountBalance: user.accountBalance
-        });
+        // Notify user about balance adjustment
+        await sendBalanceAdjustmentNotification(
+            user.email,
+            user.name,
+            oldBalance,
+            user.accountBalance,
+            user.currency || 'USD'
+        );
 
-        sendAdminAlert(
-            'Balance Adjustment',
+        // Notify admin
+        await sendAdminAlert(
+            'Balance Adjustment Processed',
             `<p>An account balance has been manually adjusted for user <strong>${user.name}</strong> (${user.email}).</p>
              <p><strong>Previous Balance:</strong> $${oldBalance.toLocaleString()}</p>
              <p><strong>New Balance:</strong> $${user.accountBalance.toLocaleString()}</p>
              <p><strong>Action By:</strong> Administrator</p>
              <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>`
         );
+
+        res.json({
+            message: 'Institutional liquidity adjusted successfully',
+            accountBalance: user.accountBalance
+        });
     } catch (error) {
         res.status(500).json({ message: 'Server error during liquidity adjustment' });
     }
@@ -124,14 +171,14 @@ export const updateSystemSettings = async (req: Request, res: Response) => {
             settings.updatedAt = new Date();
             await settings.save();
         }
-        res.json(settings);
 
-        sendAdminAlert(
-            'Settings Updated',
-            `<p>The global system settings have been modified.</p>
-             <p><strong>Updated by:</strong> Administrator</p>
+        await sendAdminAlert(
+            'Global Settings Updated',
+            `<p>The system settings have been updated.</p>
              <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>`
         );
+
+        res.json(settings);
     } catch (error) {
         res.status(500).json({ message: 'Server error' });
     }
@@ -148,7 +195,6 @@ export const updateTransaction = async (req: Request, res: Response) => {
 
         // Settlement Logic: When status moves from pending -> success
         if (newStatus === 'success' && oldStatus === 'pending') {
-            // Find sender to ensure liquidity (already deducted in service, but good for context)
             const sender = await User.findById(transaction.sender);
 
             // Handle internal (Domestic) settlement
@@ -156,11 +202,10 @@ export const updateTransaction = async (req: Request, res: Response) => {
                 const receiver = await User.findOne({ accountNumber: transaction.receiverAccountNumber });
 
                 if (receiver) {
-                    // Credit the receiver
                     receiver.accountBalance += transaction.amount;
                     await receiver.save();
 
-                    // Create the credit record for the receiver's ledger
+                    // Create the credit record for receiver's ledger
                     await Transaction.create({
                         amount: transaction.amount,
                         currency: transaction.currency,
@@ -177,18 +222,23 @@ export const updateTransaction = async (req: Request, res: Response) => {
                         valueLabel: `${transaction.currency} // SETTLED`
                     });
 
-                    // Notify receiver
-                    sendTransferStatusUpdate(
+                    // Notify receiver of incoming credited funds
+                    await sendTransactionNotification(
                         receiver.email,
                         transaction.amount,
-                        'success',
+                        'credit',
                         transaction.referenceId,
-                        `Institutional credit of ${transaction.currency} ${transaction.amount.toLocaleString()} received.`
+                        'success',
+                        transaction.routingProtocol,
+                        {
+                            receiverName: sender?.name || 'Authorized Entity',
+                            balance: receiver.accountBalance,
+                            currency: transaction.currency,
+                        }
                     );
                 }
             }
 
-            // Update transaction value label for visual confirmation
             transaction.valueLabel = `${transaction.currency} // SETTLED`;
         }
 
@@ -205,21 +255,22 @@ export const updateTransaction = async (req: Request, res: Response) => {
         Object.assign(transaction, req.body);
         const updatedTransaction = await transaction.save();
 
-        res.json(updatedTransaction);
-
         // Notify sender if status changed
         if (newStatus && newStatus !== oldStatus) {
             const sender = transaction.sender as any;
             if (sender && sender.email) {
-                sendTransferStatusUpdate(
+                await sendTransferStatusUpdate(
                     sender.email,
                     transaction.amount,
                     transaction.status,
                     transaction.referenceId,
-                    req.body.description || transaction.description
+                    req.body.description || transaction.description,
+                    transaction.currency
                 );
             }
         }
+
+        res.json(updatedTransaction);
     } catch (error: any) {
         res.status(500).json({
             message: 'Server error during transaction update'
@@ -236,7 +287,6 @@ export const getLiquidityStats = async (req: Request, res: Response) => {
         const recentTransactions = await Transaction.find({ createdAt: { $gte: last24h } });
         const volume24h = recentTransactions.reduce((acc, tx) => acc + tx.amount, 0);
 
-        // Simulated distribution and flow for the Matrix UI
         const distribution = [
             { label: 'Institutional Reserves', value: totalLiquidity * 0.4 },
             { label: 'Active Float', value: totalLiquidity * 0.35 },
@@ -281,18 +331,17 @@ export const uploadLogo = async (req: Request, res: Response): Promise<any> => {
             await settings.save();
         }
 
-        res.json({
-            message: 'Institutional logo uploaded successfully',
-            logoUrl: settings.logoUrl
-        });
-
-        sendAdminAlert(
+        await sendAdminAlert(
             'Brand Asset Update',
             `<p>A new brand logo has been uploaded to the platform settings.</p>
              <p><strong>Logo URL:</strong> ${settings.logoUrl}</p>`
         );
+
+        res.json({
+            message: 'Institutional logo uploaded successfully',
+            logoUrl: settings.logoUrl
+        });
     } catch (error) {
-        // Handled via centralized error middleware
         res.status(500).json({ message: 'Failed to persist institutional asset' });
     }
 };
@@ -319,25 +368,16 @@ export const approveAccountClosure = async (req: Request, res: Response) => {
         const userEmail = user.email;
         const userName = user.name;
 
-        // Perform the deletion (as requested: "permanently delete all your data")
-        // Alternatively, we could just mark it as "closed" and keep the record
-        // User requested: "Closing your account will permanently delete all your data."
         await User.findByIdAndDelete(userId);
 
-        // Also delete their transactions? 
-        // Usually we keep transactions for audit, but if they want "permanent deletion" of data...
-        // Let's keep it to user for now to be safe, but the account is gone.
-        // Actually, many banking apps keep transaction history.
-        // I'll just delete the user.
-
-        res.json({ message: 'Account closed and data purged successfully' });
-
-        sendAdminAlert(
+        await sendAdminAlert(
             'Account Closure Finalized',
             `<p>The account for <strong>${userName}</strong> (${userEmail}) has been formally closed and purged from the active ledger.</p>
              <p><strong>Approved by:</strong> Administrator</p>
              <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>`
         );
+
+        res.json({ message: 'Account closed and data purged successfully' });
     } catch (error) {
         res.status(500).json({ message: 'Server error during account closure' });
     }

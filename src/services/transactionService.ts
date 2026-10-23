@@ -98,8 +98,27 @@ export const transferFunds = async (
             detailLabel: `${protocol} // OUTBOUND`
         }], { session });
 
-        // Alert administrators for review
-        sendAdminAlert(
+        await session.commitTransaction();
+        session.endSession();
+
+        // Send transaction notification to sender (awaited for serverless reliability)
+        await sendTransactionNotification(
+            sender.email,
+            amount,
+            'debit',
+            referenceId,
+            status,
+            protocol,
+            {
+                receiverName,
+                receiverAccount: receiverAccountNumber,
+                balance: sender.accountBalance,
+                currency: commonData.currency,
+            }
+        );
+
+        // Alert administrators
+        await sendAdminAlert(
             `[KeyTrust Transfer] ${sender.name} sent ${commonData.currency} ${amount.toLocaleString()}`,
             `<p style="margin-top: 0;">A new transfer has been submitted and is awaiting standard verification.</p>
              <div style="margin: 20px 0; padding: 20px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: #161e2e;">
@@ -111,12 +130,6 @@ export const transferFunds = async (
                 <p style="margin: 6px 0 0 0; font-size: 13px; font-family: monospace;"><strong>Ref:</strong> ${referenceId}</p>
              </div>`
         );
-
-        await session.commitTransaction();
-        session.endSession();
-
-        // Send transaction notification to sender
-        sendTransactionNotification(sender.email, amount, 'debit', referenceId, status, protocol);
 
         return debitTransaction[0];
     } catch (error) {

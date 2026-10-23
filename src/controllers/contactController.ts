@@ -23,7 +23,7 @@ export const submitContactForm = async (req: Request, res: Response) => {
         });
 
         // Notify Admin of new message
-        sendAdminAlert(
+        await sendAdminAlert(
             `New Message: ${subject}`,
             `<p style="margin-top: 0;">A new message has been received from <strong>${name}</strong> (${email}).</p>
              <div style="margin: 20px 0; padding: 20px; border: 1px solid #eeeeee; background: #fafafa;">
