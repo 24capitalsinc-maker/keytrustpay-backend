@@ -46,7 +46,7 @@ const getFromAddress = (fromName = 'KeyTrust Pay'): string => {
 
 // Create a configured SMTP transporter with resilient timeouts for serverless environments
 const getTransporter = () => {
-    const host = (process.env.SMTP_HOST || ENV.SMTP_HOST || 'mail.privateemail.com').trim();
+    const host = (process.env.SMTP_HOST || ENV.SMTP_HOST || 'server345.web-hosting.com').trim();
     const port = parseInt(process.env.SMTP_PORT || String(ENV.SMTP_PORT || '465'), 10);
     const user = (process.env.SMTP_USER || ENV.SMTP_USER || '').trim();
     const pass = (process.env.SMTP_PASS || ENV.SMTP_PASS || '').trim();

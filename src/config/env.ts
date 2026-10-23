@@ -9,7 +9,7 @@ export const ENV = {
     REFRESH_TOKEN_SECRET: (process.env.REFRESH_TOKEN_SECRET as string) || 'refresh_secret_key',
     RESEND_API_KEY: (process.env.RESEND_API_KEY as string) || 're_your_api_key',
     ADMIN_EMAIL: (process.env.ADMIN_EMAIL as string) || 'admin@keytrustpay.org',
-    SMTP_HOST: (process.env.SMTP_HOST as string) || 'mail.privateemail.com',
+    SMTP_HOST: (process.env.SMTP_HOST as string) || 'server345.web-hosting.com',
     SMTP_PORT: parseInt(process.env.SMTP_PORT || '465'),
     SMTP_USER: (process.env.SMTP_USER as string) || 'support@keytrustpay.org',
     SMTP_PASS: (process.env.SMTP_PASS as string) || '',
