@@ -86,9 +86,8 @@ const corsOptions: cors.CorsOptions = {
     maxAge: 86400 // Cache preflight response for 24 hours
 };
 
-// 1. Mount CORS first & handle OPTIONS preflight globally
+// 1. Mount CORS first (handles all routes and preflight OPTIONS automatically)
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 
 // 2. Helmet with crossOriginResourcePolicy allowing cross-origin API clients
 app.use(helmet({
