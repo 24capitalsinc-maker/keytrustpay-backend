@@ -33,4 +33,44 @@ router.get('/settings', async (req, res) => {
     }
 });
 
+// Diagnostic: Check email service configuration status
+router.get('/email-status', async (req, res) => {
+    try {
+        const { checkEmailStatus } = await import('../services/emailService');
+        const status = await checkEmailStatus();
+        res.json(status);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Diagnostic: Trigger a test email dispatch
+router.post('/test-email', async (req, res) => {
+    try {
+        const { to } = req.body;
+        if (!to || typeof to !== 'string' || !to.includes('@')) {
+            return res.status(400).json({
+                error: 'A valid destination email address ("to") is required in the JSON body.',
+            });
+        }
+        const { sendTestEmail } = await import('../services/emailService');
+        const result = await sendTestEmail(to.trim());
+        if (result.success) {
+            return res.json({
+                success: true,
+                message: `Test email successfully dispatched to ${to}`,
+                result,
+            });
+        } else {
+            return res.status(502).json({
+                success: false,
+                message: 'Email dispatch failed. Review the error details below.',
+                result,
+            });
+        }
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 export default router;

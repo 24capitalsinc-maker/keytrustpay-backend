@@ -2,45 +2,71 @@ import nodemailer from 'nodemailer';
 import { Resend } from 'resend';
 import { ENV } from '../config/env';
 
-// Initialize Resend client if valid API key is available
-let resendClient: Resend | null = null;
-if (ENV.RESEND_API_KEY && ENV.RESEND_API_KEY.startsWith('re_') && !ENV.RESEND_API_KEY.includes('your_api_key')) {
-    try {
-        resendClient = new Resend(ENV.RESEND_API_KEY);
-    } catch (err) {
-        console.warn('[EmailService] Could not initialize Resend client:', err);
+// Dynamic Resend client instantiation
+const getResendClient = (): Resend | null => {
+    const key = (process.env.RESEND_API_KEY || ENV.RESEND_API_KEY || '').trim();
+    if (key.startsWith('re_') && !key.includes('your_api_key')) {
+        try {
+            return new Resend(key);
+        } catch (err) {
+            console.warn('[EmailService] Could not initialize Resend client:', err);
+        }
     }
-}
+    return null;
+};
 
 // Check if SMTP credentials appear configured
 const isSmtpConfigured = (): boolean => {
-    if (!ENV.SMTP_HOST || !ENV.SMTP_USER || !ENV.SMTP_PASS) return false;
-    const pass = (ENV.SMTP_PASS || '').trim().toLowerCase();
+    const host = (process.env.SMTP_HOST || ENV.SMTP_HOST || '').trim();
+    const user = (process.env.SMTP_USER || ENV.SMTP_USER || '').trim();
+    const pass = (process.env.SMTP_PASS || ENV.SMTP_PASS || '').trim();
+    if (!host || !user || !pass) return false;
+    const lower = pass.toLowerCase();
     const isPlaceholder =
-        pass === '' ||
-        pass === 'your_mailbox_password_here' ||
-        pass === 'yourpassword' ||
-        pass === 'changeme';
+        lower === '' ||
+        lower === 'your_mailbox_password_here' ||
+        lower === 'yourpassword' ||
+        lower === 'changeme' ||
+        lower === 'youremailpasswordhere';
     return !isPlaceholder;
 };
 
-// Create a configured SMTP transporter with resilient timeouts
+// Resolve the sender address dynamically
+const getFromAddress = (fromName = 'KeyTrust Pay'): string => {
+    const sender = (
+        process.env.EMAIL_FROM ||
+        process.env.FROM_EMAIL ||
+        ENV.EMAIL_FROM ||
+        process.env.SMTP_USER ||
+        ENV.SMTP_USER ||
+        'support@keytrustpay.org'
+    ).trim();
+    return `"${fromName}" <${sender}>`;
+};
+
+// Create a configured SMTP transporter with resilient timeouts for serverless environments
 const getTransporter = () => {
+    const host = (process.env.SMTP_HOST || ENV.SMTP_HOST || 'mail.privateemail.com').trim();
+    const port = parseInt(process.env.SMTP_PORT || String(ENV.SMTP_PORT || '465'), 10);
+    const user = (process.env.SMTP_USER || ENV.SMTP_USER || '').trim();
+    const pass = (process.env.SMTP_PASS || ENV.SMTP_PASS || '').trim();
+    const isSecure = port === 465;
+
     return nodemailer.createTransport({
-        host: ENV.SMTP_HOST,
-        port: ENV.SMTP_PORT, // 465 for SSL, 587 for TLS
-        secure: ENV.SMTP_PORT === 465,
+        host,
+        port,
+        secure: isSecure,
         auth: {
-            user: ENV.SMTP_USER,
-            pass: ENV.SMTP_PASS,
+            user,
+            pass,
         },
         tls: {
             rejectUnauthorized: false,
             minVersion: 'TLSv1.2',
         },
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 15000,
+        connectionTimeout: 4000,
+        greetingTimeout: 4000,
+        socketTimeout: 6000,
     });
 };
 
@@ -63,20 +89,25 @@ const sendEmail = async ({
     text: string;
     fromName?: string;
 }): Promise<boolean> => {
-    const fromAddress = `"${fromName}" <${ENV.SMTP_USER || 'support@keytrustpay.org'}>`;
+    const fromAddress = getFromAddress(fromName);
+    const resend = getResendClient();
 
     // 1. Try Resend if configured
-    if (resendClient) {
+    if (resend) {
         try {
-            const result = await resendClient.emails.send({
+            const result = await resend.emails.send({
                 from: fromAddress,
                 to: [to],
                 subject,
                 html,
                 text,
             });
-            console.log(`✅ [Resend] Email delivered to ${to} (Subject: ${subject}, ID: ${result.data?.id})`);
-            return true;
+            if (result.error) {
+                console.warn(`⚠️ [Resend API Error] Failed to send to ${to}:`, result.error.message || result.error);
+            } else {
+                console.log(`✅ [Resend] Email delivered to ${to} (Subject: ${subject}, ID: ${result.data?.id})`);
+                return true;
+            }
         } catch (resendError: any) {
             console.warn(`⚠️ [Resend] Failed to send to ${to}, attempting SMTP fallback:`, resendError.message);
         }
@@ -101,7 +132,7 @@ const sendEmail = async ({
         }
     }
 
-    console.warn(`⚠️ [EmailService] Skipped email to ${to} ("${subject}"). Set SMTP_PASS or RESEND_API_KEY in Vercel.`);
+    console.warn(`⚠️ [EmailService] Skipped email to ${to} ("${subject}"). Set RESEND_API_KEY or SMTP credentials in Vercel.`);
     return false;
 };
 
@@ -530,4 +561,141 @@ export const sendAdminAlert = async (subject: string, content: string) => {
         text,
         fromName: 'KeyTrust Alerts',
     });
+};
+
+/**
+ * Diagnostic Verification: Check environment variable configuration and test SMTP connectivity
+ */
+export const checkEmailStatus = async () => {
+    const resend = getResendClient();
+    const hasResend = !!resend;
+    const rawResendKey = (process.env.RESEND_API_KEY || ENV.RESEND_API_KEY || '').trim();
+    const resendKeyMasked = rawResendKey.startsWith('re_')
+        ? `${rawResendKey.slice(0, 6)}...${rawResendKey.slice(-4)}`
+        : null;
+
+    const hasSmtp = isSmtpConfigured();
+    const smtpHost = (process.env.SMTP_HOST || ENV.SMTP_HOST || '').trim();
+    const smtpPort = parseInt(process.env.SMTP_PORT || String(ENV.SMTP_PORT || '465'), 10);
+    const smtpUser = (process.env.SMTP_USER || ENV.SMTP_USER || '').trim();
+    const fromAddress = getFromAddress('KeyTrust Pay');
+
+    let smtpHandshake: { success: boolean; message: string } | null = null;
+    if (hasSmtp) {
+        try {
+            const transporter = getTransporter();
+            await transporter.verify();
+            smtpHandshake = {
+                success: true,
+                message: 'SMTP handshake and credentials authenticated successfully',
+            };
+        } catch (err: any) {
+            smtpHandshake = {
+                success: false,
+                message: err.message,
+            };
+        }
+    }
+
+    return {
+        timestamp: new Date().toISOString(),
+        configured: hasResend || hasSmtp,
+        activeEngine: hasResend
+            ? 'Resend (HTTP REST API)'
+            : hasSmtp
+            ? 'SMTP (Nodemailer)'
+            : 'None (Email delivery currently disabled)',
+        fromAddress,
+        adminRecipient: process.env.ADMIN_EMAIL || ENV.ADMIN_EMAIL,
+        resend: {
+            configured: hasResend,
+            keyPrefix: resendKeyMasked,
+        },
+        smtp: {
+            configured: hasSmtp,
+            host: smtpHost || 'Not set',
+            port: smtpPort,
+            user: smtpUser || 'Not set',
+            handshake: smtpHandshake,
+        },
+    };
+};
+
+/**
+ * Send a live test email and return detailed execution diagnostic
+ */
+export const sendTestEmail = async (toEmail: string) => {
+    const fromAddress = getFromAddress('KeyTrust Pay Diagnostics');
+    const subject = 'KeyTrust Pay Email Diagnostic Verification';
+    const html = getBaseTemplate(
+        'Email System Operational',
+        `<p style="margin-top:0;">This is a test notification confirming that the <strong>KeyTrust Pay</strong> outgoing email system is successfully configured and active.</p>
+         <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 12px; padding: 20px; margin: 20px 0;">
+            <p style="margin: 0; font-size: 13px; color: #34d399;"><strong>Status: ACTIVE</strong></p>
+            <p style="margin: 6px 0 0 0; font-size: 12px; color: #94a3b8;">Timestamp: ${new Date().toUTCString()}</p>
+         </div>`,
+        'System Test'
+    );
+    const text = `KeyTrust Pay Email System Diagnostic: Email delivery is operational at ${new Date().toUTCString()}`;
+
+    const resend = getResendClient();
+    if (resend) {
+        try {
+            const result = await resend.emails.send({
+                from: fromAddress,
+                to: [toEmail],
+                subject,
+                html,
+                text,
+            });
+            if (result.error) {
+                return {
+                    success: false,
+                    engine: 'Resend',
+                    error: result.error.message || JSON.stringify(result.error),
+                };
+            }
+            return {
+                success: true,
+                engine: 'Resend',
+                messageId: result.data?.id,
+            };
+        } catch (err: any) {
+            return {
+                success: false,
+                engine: 'Resend',
+                error: err.message,
+            };
+        }
+    }
+
+    if (isSmtpConfigured()) {
+        try {
+            const transporter = getTransporter();
+            const info = await transporter.sendMail({
+                from: fromAddress,
+                to: toEmail,
+                subject,
+                html,
+                text,
+            });
+            return {
+                success: true,
+                engine: 'SMTP',
+                messageId: info.messageId,
+            };
+        } catch (err: any) {
+            return {
+                success: false,
+                engine: 'SMTP',
+                error: err.message,
+            };
+        }
+    }
+
+    return {
+        success: false,
+        engine: 'None',
+        error: 'Neither RESEND_API_KEY nor SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) are configured in Vercel environment variables.',
+    };
 };
