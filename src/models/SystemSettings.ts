@@ -21,18 +21,18 @@ export interface ISystemSettings extends Document {
 const SystemSettingsSchema: Schema = new Schema({
     isMaintenanceMode: { type: Boolean, default: false },
     isRegistrationEnabled: { type: Boolean, default: true },
-    companyName: { type: String, default: 'optimanexgen' },
-    supportEmail: { type: String, default: 'support@optimanexgen.org' },
+    companyName: { type: String, default: 'KeyTrust Pay' },
+    supportEmail: { type: String, default: 'support@keytrustpay.org' },
     logoUrl: { type: String, default: '/logo.png' },
-    logoText: { type: String, default: 'optima' },
-    logoAccent: { type: String, default: 'nexgen' },
+    logoText: { type: String, default: 'KeyTrust' },
+    logoAccent: { type: String, default: 'Pay' },
     socialLinks: {
         twitter: { type: String, default: '' },
         linkedin: { type: String, default: '' },
         instagram: { type: String, default: '' },
         facebook: { type: String, default: '' },
     },
-    maintenanceMessage: { type: String, default: 'System upgrade in progress. Sovereign services will resume shortly.' },
+    maintenanceMessage: { type: String, default: 'We are currently performing scheduled maintenance to improve your banking experience. We will be back online shortly.' },
     updatedAt: { type: Date, default: Date.now }
 });
 

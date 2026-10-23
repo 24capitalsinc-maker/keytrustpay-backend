@@ -38,7 +38,7 @@ app.use(async (req, res, next) => {
 // Rate Limiting
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per window
+    max: 1000, // Limit each IP to 1000 requests per window
     standardHeaders: true,
     legacyHeaders: false,
     message: 'Too many requests from this IP, please try again after 15 minutes.'
@@ -55,7 +55,7 @@ app.use(cors({
             'http://localhost:3001',
             'http://192.168.1.239:3000',
         ].filter(Boolean);
-        if (!origin || allowed.includes(origin)) {
+        if (!origin || allowed.includes(origin) || (typeof origin === 'string' && origin.endsWith('.vercel.app'))) {
             callback(null, origin || '*');
         } else {
             callback(new Error(`CORS: Origin ${origin} not allowed`));

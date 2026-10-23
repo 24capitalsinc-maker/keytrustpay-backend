@@ -192,6 +192,16 @@ export const updateTransaction = async (req: Request, res: Response) => {
             transaction.valueLabel = `${transaction.currency} // SETTLED`;
         }
 
+        // Refund Logic: If status moves from pending -> failed, restore funds to sender
+        if (newStatus === 'failed' && oldStatus === 'pending') {
+            const sender = await User.findById(transaction.sender);
+            if (sender) {
+                sender.accountBalance += transaction.amount;
+                await sender.save();
+            }
+            transaction.valueLabel = `${transaction.currency} // CANCELLED`;
+        }
+
         Object.assign(transaction, req.body);
         const updatedTransaction = await transaction.save();
 
